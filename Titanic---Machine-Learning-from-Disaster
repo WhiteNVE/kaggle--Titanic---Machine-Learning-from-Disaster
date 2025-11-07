@@ -4,7 +4,11 @@ import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
 import torch.nn as nn
+from sklearn.linear_model import LogisticRegression
 from math import log2
+from sklearn.tree import DecisionTreeClassifier as DecisionTreeClassifier2
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
 ###解决是否生还问题我们有三个经典模型，分别是逻辑回归，决策树，随机森林等模型
 ###首先，我们先构造出逻辑回归模型
 class logic_regression:
@@ -115,6 +119,8 @@ class DecisionTreeClassifier():
         ###这里的最大深度是指一棵树的最大分支数量，目的是为了防止出现过拟合情况
         self.depth_max = depth_max
         self.target = 'Survived'
+        self.first_feature = []
+        self.first_gain = []
     def data_standard(self,X):
         ###依旧先进行数据清洗
         X = X.drop(columns = ['PassengerId','Name','Ticket','Cabin'])
@@ -142,6 +148,8 @@ class DecisionTreeClassifier():
         max_feature = None
         total_entropy = self.entropy(X, target)
         X_tmp = X.drop(columns = target)
+        first_feature = []
+        first_gain = []
         for feature in X_tmp.columns:
             values,counts = np.unique(X[feature],return_counts = True)
             sum_entropy = 0.0
@@ -156,6 +164,10 @@ class DecisionTreeClassifier():
             if gain > max_gain :
                 max_gain = gain
                 max_feature = feature
+            if len(X) == 891:
+                self.first_feature.append(feature)
+                self.first_gain.append(gain)
+
         return max_feature,max_gain
     ###fit_one与fit是连起来用的，这样方便理顺逻辑
     def fit_one(self,X,target,depth = 0):
@@ -197,12 +209,15 @@ class DecisionTreeClassifier():
             result = self.predict_one(sample.iloc[i],self.tree)
             prediction.append(result)
         return prediction
+    def get_first_gain(self):
+        return self.first_feature,self.first_gain
 ###以上便完成了决策树的构建，而决策树主要用于量化以构建出随机森林模型
 ###随机森林是训练出多棵树并让多棵树对数据进行预测并取得最大预测结果，大大减小了过拟合情况的发生
 class random_trees:
-    def __init__(self,max_time = 500):
+    def __init__(self,max_time = 500,random_state = 42):
         ###这里的最大次数是指构建出树的最大数量
         self.max_time = max_time
+        self.random_state = random_state
     ###同样要对数据进行标准化，与决策树标准化相似
     def sample_standard(self,X):
         self.target = 'Survived'
@@ -221,13 +236,15 @@ class random_trees:
         return X
     ###有放回的抽取样本，使得样本多样性高并且提供自然验证机制
     def boot_strap_samples(self,samples):
+        np.random.seed(self.random_state)
         indices = np.random.choice(len(samples),len(samples),replace = True)
         sample = samples.iloc[indices]
         return sample
     ###无放回的抽取特征用于样本构建当中，此处不进行有放回抽样是因为特征数量往往比较小而样本数量往往比较大，更符合自然机制
     def get_random_feature(self,samples,target):
+        np.random.seed(self.random_state)
         samples = samples.drop(columns = target)
-        column = np.random.choice(samples.columns,int(len(samples.columns) / 2) + 1,replace = False).tolist()
+        column = np.random.choice(samples.columns,int(len(samples.columns) / 2),replace = False).tolist()
         column.append(target)
         return column
     ###根据样本数据训练出多棵决策树
@@ -257,7 +274,7 @@ class random_trees:
         max_sort = np.argmax(counts)
         result = result[:,max_sort]
         return result
-###以上我们便完成了三种模型的构建，那么我可以开始测试每个模型的精确率了
+##以上我们便完成了三种模型的构建，那么我可以开始测试每个模型的精确率了
 def get_accuracy(sample_key,result):
     count1 = np.where(result == sample_key['Survived'], 1, 0).sum()
     accuracy = count1 / len(sample_key)
@@ -278,14 +295,14 @@ tree = DecisionTreeClassifier()
 tree.fit(sample_train)
 result2 = tree.predict(sample_test)
 accuracy2 = get_accuracy(sample_key,result2)
-trees = random_trees()
 ###构建随机森林进行预测
+trees = random_trees()
 trees.fit(sample_train)
 result3 = trees.predict(sample_test)
 accuracy3 = get_accuracy(sample_key,result3)
 print(accuracy1)#0.8851
 print(accuracy2)#0.9090
-print(accuracy3)#0.9186
+print(accuracy3)#0.9356
 ###通过比较这三个模型的准确率我们可以得出结论：随机森林在该测试样例中的准确率是最高的
 ###封装为csv文件并上传到kaggle中
 submission = pd.DataFrame({
@@ -294,6 +311,82 @@ submission = pd.DataFrame({
 })
 submission.to_csv(r"C:\study\submission.csv",index = False)
 ###最终得分0.76315
+###接下来，我们使用scikit-learn库中的函数来直接获取模型，并与我们手写的模型进行对比
+def X_standard(X):
+    a = 0
+    ###因为当进行预测结果的时候的数据是没有survived这个特征的，所以我们要对其进行区分
+    if 'Survived' in X.columns:
+        a = 1
+        Y = X['Survived'].copy()
+        X = X.drop(columns=['Survived']).copy()
+    ###对客观无关数据删去
+    X = X.drop(columns=['PassengerId', 'Name', 'Ticket', 'Cabin']).copy()
+    ###对样本数据进行清洗NA值
+    X['Age'] = X['Age'].fillna(X['Age'].median())
+    X['Embarked'] = X['Embarked'].ffill()
+    ###因为逻辑回归所用到的数据必须得是数值类型，所以我们将字符类型转化为数值类型
+    X['Sex'] = X['Sex'].map({'female': 0, 'male': 1})
+    ###使用独热编码来对分类型字符进行数值转化
+    X = pd.get_dummies(X, columns=['Embarked'], dtype=int)
+    X = X.fillna(X.median())
+    X = X.to_numpy()
+    ###使用scikitlearn库中的标准化函数来对数据进行缩放，以减小梯度计算误差
+    X_stand = StandardScaler()
+    X_scaler = X_stand.fit_transform(X)
+    X_scaler = np.column_stack([np.ones(X_scaler.shape[0]), X_scaler])
+    ###我们需要保存标准化函数，目的是为了在预测时将接收的预测数据进行同比例标准化
+    if a == 0: return X_scaler
+    return X_scaler, Y
+X,Y = X_standard(sample_train)
+logic_model = LogisticRegression(random_state = 42,max_iter = 1000)
+logic_model.fit(X,Y)
+result4 = logic_model.predict(X_standard(sample_test))
+accuracy4 = get_accuracy(sample_key,result4)###0.9354
+print(accuracy4)
+def sample_standard2(X):
+
+    X = X.drop(columns = ['PassengerId','Name','Ticket','Cabin'])
+    X['Embarked'] = X['Embarked'].fillna(X['Embarked'].mode()[0])
+    numeric_features = X.select_dtypes(include = ['int64','float64']).columns
+    str_features = X.select_dtypes(include = ['object','category']).columns
+    for feature in numeric_features:
+        X[feature] = X[feature].fillna(X[feature].median())
+    for feature in str_features:
+        X[feature] = X[feature].fillna(X[feature].mode()[0])
+    X = pd.get_dummies(X,columns = str_features.tolist())
+    X['Age'] = pd.cut(X['Age'],bins = [-1,12,18,35,60,100],labels = [1,2,3,4,5])
+    X['Fare'] = pd.cut(X['Fare'],bins = [-1,10,20,30,40,50,60,1000],labels = [1,2,3,4,5,6,7])
+    # count = X.isna().sum(axis = 0)
+    # print(count)
+    return X
+X2= sample_standard2(sample_train)
+X2 = X2.drop(columns = 'Survived')
+Y2 = sample_train['Survived'].copy()
+tree2 = DecisionTreeClassifier2(random_state=42, max_depth=5)
+print(X2)
+print(Y2)
+tree2.fit(X2,Y2)
+result5 = tree2.predict(sample_standard2(sample_test))
+accuracy5 = get_accuracy(sample_key,result5)
+print(accuracy5)###0.8732
+trees2 = RandomForestClassifier(n_estimators = 100,max_depth=5,random_state = 42,n_jobs = 1)
+trees2.fit(X2,Y2)
+result6 = trees2.predict(sample_standard2(sample_test))
+accuracy6 = get_accuracy(sample_key,result6)
+print(accuracy6)###0.9354
+###accuracy1 = 0.8851 accuracy2 =0.9090   accuracy3 = 0.9356
+###accuracy4 = 0.9354 accuracy5 = 0.8732  accuracy6 = 0.9354
+###进行对比我们发现，逻辑回归模型精确率低于所得模型5%,而决策树高于3%,随机森林低于1.6%
+###在计算完精确率后，我们可以对船只下次出海时如何提高乘客生还率进行分析
+###我们可以先计算各个特征的信息增量并以图表的形式展现来可视化判断哪些信息属于重要信息
+tree2 = DecisionTreeClassifier()
+tree2.fit(sample_train)
+features,gains = tree2.get_first_gain()
+print(features,gains)
+plt.plot(features,gains)
+plt.show()
+###我们可以看到，性别是第一信息增量，而票价是第二信息增量
+###所以我们应该多注意对低票价区域进行安全设施改善，这样便可以极大地提升乘客生还率
 
 
 
